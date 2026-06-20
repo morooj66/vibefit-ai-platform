@@ -4,8 +4,12 @@ export interface SupabasePublicConfig {
 }
 
 function readHuggingFaceVariable(name: 'VITE_SUPABASE_URL' | 'VITE_SUPABASE_ANON_KEY'): string | undefined {
-  const value = window.huggingface?.variables?.[name];
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  try {
+    const value = window.huggingface?.variables?.[name];
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
