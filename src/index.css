@@ -39,7 +39,7 @@
   --color-info-50: #eff6ff;
   --color-info-500: #3b82f6;
 
-  --font-sans: Tajawal, 'Segoe UI', Tahoma, system-ui, sans-serif;
+  --font-sans: 'Tajawal', 'Noto Sans Arabic', Arial, sans-serif;
   --radius-sm: 4px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -53,6 +53,20 @@
 @layer base {
   html {
     font-family: var(--font-sans);
+  }
+
+  html[dir='rtl'],
+  html[dir='rtl'] body,
+  html[dir='rtl'] h1,
+  html[dir='rtl'] h2,
+  html[dir='rtl'] h3,
+  html[dir='rtl'] p,
+  html[dir='rtl'] button,
+  html[dir='rtl'] input,
+  html[dir='rtl'] textarea {
+    letter-spacing: 0 !important;
+    font-feature-settings: normal;
+    text-transform: none;
   }
 
   body {

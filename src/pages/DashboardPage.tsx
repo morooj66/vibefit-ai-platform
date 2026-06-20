@@ -179,7 +179,7 @@ export function DashboardPage() {
     <Container className="py-4 md:py-6">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold tracking-wide text-primary-600">VibeFit</p>
+          <p className="text-xs font-semibold text-primary-600">VibeFit</p>
           <h1 className="text-xl font-bold md:text-2xl">لوحة التحكم</h1>
           <p className="mt-0.5 text-xs text-neutral-500">مرحبًا بك — تابع تقدّمك وتوصيتك</p>
         </div>
