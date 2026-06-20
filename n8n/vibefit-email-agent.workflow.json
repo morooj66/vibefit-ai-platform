@@ -1,0 +1,844 @@
+{
+  "name": "VibeFit Email Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "q": "=-from:{{$env.VIBEFIT_GMAIL_ACCOUNT}} -label:vibefit-agent-processed is:inbox -in:spam -in:drafts"
+        }
+      },
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_OAUTH_CREDENTIAL",
+          "name": "VibeFit Gmail"
+        }
+      },
+      "notes": "Inbound only — excludes VibeFit account, processed label, spam, drafts"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst vibeFitAccount = String($env.VIBEFIT_GMAIL_ACCOUNT || '').trim().toLowerCase();\n\nfunction extractEmail(raw) {\n  if (!raw) return '';\n  const text = String(raw);\n  const match = text.match(/<([^>]+)>/);\n  return (match ? match[1] : text).trim().toLowerCase();\n}\n\nfunction extractName(raw) {\n  if (!raw) return '';\n  const text = String(raw);\n  const match = text.match(/^([^<]+)</);\n  if (match) return match[1].trim();\n  const email = extractEmail(raw);\n  return email ? email.split('@')[0] : '';\n}\n\nfunction stripHtml(text) {\n  return String(text || '').replace(/<[^>]*>/g, ' ').replace(/\\s+/g, ' ').trim();\n}\n\nconst sender_email = extractEmail(item.from || item.sender || item.sender_email || '');\nconst sender_name = extractName(item.from || item.sender || item.sender_name || '');\nconst subject = String(item.subject || '').trim();\nlet body_text = stripHtml(item.textPlain || item.text || item.body_text || item.snippet || '');\n\nconst cutPatterns = [\n  /\\nOn .+ wrote:\\s*/i,\n  /\\nFrom:.+\\n/i,\n  /\\nSent from my iPhone/i,\n  /\\n-{2,}\\s*\\n/,\n  /\\n_{2,}\\s*\\n/,\n];\n\nfor (const pattern of cutPatterns) {\n  const match = body_text.match(pattern);\n  if (match && match.index !== undefined && match.index > 20) {\n    body_text = body_text.slice(0, match.index).trim();\n  }\n}\n\nbody_text = body_text\n  .split('\\n')\n  .filter((line) => !line.trim().startsWith('>'))\n  .join('\\n')\n  .trim();\n\nconst dashIndex = body_text.indexOf('\\n--\\n');\nif (dashIndex > 0) body_text = body_text.slice(0, dashIndex).trim();\n\nconst normalizedSubject = subject.toLowerCase();\nconst normalizedBody = body_text.toLowerCase();\nconst normalized_question = subject && body_text && !normalizedBody.includes(normalizedSubject)\n  ? subject + '\\n\\n' + body_text\n  : (body_text || subject);\n\nreturn [{\n  json: {\n    sender_email,\n    sender_name,\n    subject,\n    body_text,\n    normalized_question,\n    message_id: item.id || item.message_id || '',\n    thread_id: item.threadId || item.thread_id || '',\n    received_at: item.internalDate || item.received_at || new Date().toISOString(),\n    label_ids: item.labelIds || item.label_ids || [],\n    is_from_vibefit: Boolean(vibeFitAccount) && sender_email === vibeFitAccount,\n    is_spam: (item.labelIds || []).includes('SPAM'),\n    is_draft: (item.labelIds || []).includes('DRAFT'),\n    already_processed: (item.labelIds || []).includes('vibefit-agent-processed'),\n  },\n}];"
+      },
+      "name": "Normalize Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        300
+      ],
+      "notes": "Extract + clean question"
+    },
+    {
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst item = $input.first().json;\nconst sender_hash = crypto.createHash('sha256').update(String(item.sender_email || '').trim().toLowerCase()).digest('hex');\nreturn [{ json: { ...item, sender_hash } }];"
+      },
+      "name": "Hash Sender",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "notes": "SHA-256 hash — no raw email in events table"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst errors = [];\nconst maxLength = 2000;\n\nif (!item.message_id) errors.push('MISSING_MESSAGE_ID');\nif (!item.sender_email || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(item.sender_email)) {\n  errors.push('INVALID_EMAIL');\n}\nif (!item.normalized_question || !String(item.normalized_question).trim()) {\n  errors.push('EMPTY_MESSAGE');\n}\nif (String(item.normalized_question || '').length > maxLength) {\n  errors.push('MESSAGE_TOO_LONG');\n}\nif (item.is_from_vibefit) errors.push('FROM_VIBEFIT_ACCOUNT');\nif (item.is_spam) errors.push('SPAM');\nif (item.is_draft) errors.push('DRAFT');\nif (item.already_processed) errors.push('ALREADY_LABELED');\n\nreturn [{\n  json: {\n    ...item,\n    validation_ok: errors.length === 0,\n    validation_errors: errors,\n  },\n}];"
+      },
+      "name": "Validate Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ],
+      "notes": "Reject spam, drafts, empty, VibeFit self-mail"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "Validation-OK?",
+              "leftValue": "={{$json.validation_ok}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Validation OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/check_email_message_processed",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_message_id: $(\"Hash Sender\").item.json.message_id }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        220
+      ],
+      "notes": "Skip duplicate Gmail message_id"
+    },
+    {
+      "parameters": {
+        "jsCode": "const processed = $input.first().json;\nconst item = $('Hash Sender').first().json;\nconst already = processed === true;\nreturn [{ json: { ...item, already_processed_db: already } }];"
+      },
+      "name": "Parse Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        220
+      ],
+      "notes": "Map RPC boolean"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "Not-Duplicate?",
+              "leftValue": "={{$json.already_processed_db}}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Not Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/check_email_sender_rate_limit",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_sender_hash: $(\"Hash Sender\").item.json.sender_hash, p_max_per_hour: 10 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Check Rate Limit",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        220
+      ],
+      "notes": "Max 10 emails/hour per sender hash"
+    },
+    {
+      "parameters": {
+        "jsCode": "const allowed = $input.first().json;\nconst item = $('Hash Sender').first().json;\nreturn [{ json: { ...item, rate_ok: allowed === true } }];"
+      },
+      "name": "Parse Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        220
+      ],
+      "notes": "Map RPC boolean"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "Rate-OK?",
+              "leftValue": "={{$json.rate_ok}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Rate OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/lookup_user_id_by_email",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ target_email: $(\"Hash Sender\").item.json.sender_email }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Lookup User",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2660,
+        220
+      ],
+      "notes": "Preview lookup — Agent resolves user in backend"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $('Hash Sender').first().json;\nconst lookup = $input.first().json;\nlet user_id = null;\nif (typeof lookup === 'string' && lookup.length > 10) user_id = lookup;\nreturn [{ json: { ...item, user_found: Boolean(user_id), user_id } }];"
+      },
+      "name": "Identify User",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        220
+      ],
+      "notes": "user_found flag for reply footer"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.VIBEFIT_AGENT_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-vibefit-agent-secret",
+              "value": "={{$env.VIBEFIT_AGENT_SECRET}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $(\"Hash Sender\").item.json.normalized_question, channel: \"email\", external_sender: $(\"Hash Sender\").item.json.sender_email, conversation_id: $(\"Hash Sender\").item.json.thread_id }) }}",
+        "options": {
+          "timeout": 65000,
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "name": "Call VibeFit Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3100,
+        220
+      ],
+      "notes": "RAG + personal data decided inside Edge Function"
+    },
+    {
+      "parameters": {
+        "jsCode": "const agent = $input.first().json;\nconst email = $('Validate Message').first().json;\nconst identify = $('Identify User').first().json;\nconst userFound = typeof agent.user_found === 'boolean' ? agent.user_found : identify.user_found;\nconst response = agent.response || {};\nconst success = agent.success === true && agent.response?.answer;\nconst actions = Array.isArray(response.recommended_actions)\n  ? response.recommended_actions\n  : response.recommended_action\n    ? [response.recommended_action]\n    : [];\n\nconst lines = ['مرحبًا،', '', response.answer || 'تعذر إكمال الرد الآن. حاول مرة أخرى بعد قليل.'];\n\nif (userFound && Array.isArray(response.insights) && response.insights.length > 0) {\n  lines.push('', 'ملاحظات من بياناتك:');\n  for (const insight of response.insights.slice(0, 3)) lines.push('- ' + insight);\n}\n\nif (actions.length > 0) {\n  lines.push('', 'خطوات مقترحة:');\n  actions.slice(0, 4).forEach((step, index) => lines.push((index + 1) + '. ' + step));\n}\n\nif (Array.isArray(response.sources) && response.sources.length > 0) {\n  lines.push('', 'مصادر VibeFit:');\n  for (const source of response.sources.slice(0, 3)) {\n    lines.push('- ' + source.title + ' (' + source.category + ')');\n  }\n}\n\nif (response.safety_notice) {\n  lines.push('', String(response.safety_notice));\n}\n\nif (!userFound) {\n  lines.push('', 'للحصول على إجابة مرتبطة بخطتك ومتابعاتك، استخدم البريد المرتبط بحسابك في VibeFit.');\n}\n\nlines.push('', 'فريق VibeFit');\n\nconst subject = email.subject || 'رسالتك';\nconst replySubject = /^re:/i.test(subject) ? subject : 'Re: ' + subject;\n\nreturn [{\n  json: {\n    ...email,\n    agent_success: Boolean(success),\n    agent_error: success ? null : (agent.error || agent.message || 'AGENT_FAILED'),\n    reply_subject: replySubject,\n    reply_body: lines.join('\\n'),\n    reply_to: email.sender_email,\n    thread_id: email.thread_id,\n    message_id: email.message_id,\n    user_found: userFound,\n  },\n}];"
+      },
+      "name": "Format Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        220
+      ],
+      "notes": "No technical fields in email body"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "Agent-OK?",
+              "leftValue": "={{$json.agent_success}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "Agent OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const formatted = $input.first().json;\nreturn [{\n  json: {\n    ...formatted,\n    reply_body: 'مرحبًا،\\n\\nتعذر إكمال الرد الآن. حاول مرة أخرى بعد قليل.\\n\\nفريق VibeFit',\n    agent_success: false,\n  },\n}];"
+      },
+      "name": "Agent Error Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        420
+      ],
+      "notes": "Safe fallback body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/register_email_agent_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_message_id: $(\"Format Reply\").item.json.message_id, p_thread_id: $(\"Format Reply\").item.json.thread_id, p_sender_hash: $(\"Hash Sender\").item.json.sender_hash, p_status: \"processed\", p_error_code: null }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Register Processed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4200,
+        120
+      ],
+      "notes": "Log success without secrets"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/register_email_agent_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_message_id: $(\"Format Reply\").item.json.message_id, p_thread_id: $(\"Format Reply\").item.json.thread_id, p_sender_hash: $(\"Hash Sender\").item.json.sender_hash, p_status: \"failed\", p_error_code: $(\"Format Reply\").item.json.agent_error || \"AGENT_FAILED\" }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Register Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4200,
+        420
+      ],
+      "notes": "Log failure without secrets"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/register_email_agent_event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_message_id: $json.message_id, p_thread_id: $json.thread_id || null, p_sender_hash: $json.sender_hash, p_status: \"ignored\", p_error_code: ($json.validation_errors || [\"IGNORED\"]).join(\",\") }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Register Ignored",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        520
+      ],
+      "notes": "Log ignored/skipped messages"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "reply",
+        "messageId": "={{$json.message_id}}",
+        "message": "={{$json.reply_body}}",
+        "options": {
+          "replyToSenderOnly": true
+        }
+      },
+      "name": "Gmail Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3760,
+        120
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_OAUTH_CREDENTIAL",
+          "name": "VibeFit Gmail"
+        }
+      },
+      "notes": "Reply in same thread"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "reply",
+        "messageId": "={{$json.message_id}}",
+        "message": "={{$json.reply_body}}",
+        "options": {
+          "replyToSenderOnly": true
+        }
+      },
+      "name": "Gmail Error Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        3760,
+        420
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_OAUTH_CREDENTIAL",
+          "name": "VibeFit Gmail"
+        }
+      },
+      "notes": "Send safe fallback on agent failure"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "addLabels",
+        "messageId": "={{$(\"Format Reply\").item.json.message_id}}",
+        "labelIds": [
+          "vibefit-agent-processed"
+        ]
+      },
+      "name": "Gmail Mark Processed",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        4420,
+        120
+      ],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GMAIL_OAUTH_CREDENTIAL",
+          "name": "VibeFit Gmail"
+        }
+      },
+      "notes": "Prevent reprocessing loop"
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Email": {
+      "main": [
+        [
+          {
+            "node": "Hash Sender",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hash Sender": {
+      "main": [
+        [
+          {
+            "node": "Validate Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Message": {
+      "main": [
+        [
+          {
+            "node": "Validation OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validation OK?": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Register Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Parse Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Not Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Check Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Register Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Parse Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Rate OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate OK?": {
+      "main": [
+        [
+          {
+            "node": "Lookup User",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Register Ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup User": {
+      "main": [
+        [
+          {
+            "node": "Identify User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify User": {
+      "main": [
+        [
+          {
+            "node": "Call VibeFit Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call VibeFit Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Reply": {
+      "main": [
+        [
+          {
+            "node": "Agent OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent OK?": {
+      "main": [
+        [
+          {
+            "node": "Gmail Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agent Error Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Reply": {
+      "main": [
+        [
+          {
+            "node": "Register Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Register Processed": {
+      "main": [
+        [
+          {
+            "node": "Gmail Mark Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent Error Reply": {
+      "main": [
+        [
+          {
+            "node": "Register Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [
+    {
+      "name": "VibeFit"
+    },
+    {
+      "name": "Email Agent"
+    }
+  ]
+}

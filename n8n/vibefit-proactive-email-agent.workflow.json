@@ -1,0 +1,811 @@
+{
+  "name": "VibeFit Proactive Email Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "name": "Hourly Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "notes": "Runs detection + processes pending events hourly"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/run_proactive_lifecycle_detection",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Run Detection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ],
+      "notes": "Enqueue missing/inactivity/adherence events"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/fetch_pending_proactive_events",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_limit: 15 }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Fetch Pending Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "notes": "Get pending proactive_email_events"
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "name": "Split Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/email_preferences?user_id=eq.{{$json.user_id}}&select=*",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "Fetch Preferences",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $input.first().json;\nconst pref = $('Fetch Preferences').first().json;\n\nconst type = event.event_type;\nlet allowed = true;\nlet reason = null;\n\nif (pref.unsubscribed_at) {\n  allowed = false;\n  reason = 'unsubscribed';\n} else if (type === 'user_signed_up' && !pref.welcome_emails) {\n  allowed = false;\n  reason = 'welcome_disabled';\n} else if (type === 'weekly_checkin_missing' && !pref.reminder_emails) {\n  allowed = false;\n  reason = 'reminders_disabled';\n} else if (type === 'weekly_summary_due' && !pref.weekly_summary) {\n  allowed = false;\n  reason = 'weekly_summary_disabled';\n} else if (\n  ['adherence_dropped','adherence_improved','low_energy_detected','high_difficulty_detected','inactive_user_detected','assessment_completed','recommendation_completed'].includes(type)\n  && !pref.progress_emails\n) {\n  allowed = false;\n  reason = 'progress_disabled';\n}\n\nreturn [{ json: { ...event, pref_ok: allowed, pref_reason: reason } }];"
+      },
+      "name": "Check Preferences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ],
+      "notes": "Respect unsubscribe & flags"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "pref-ok",
+              "leftValue": "={{$json.pref_ok}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "IF Preferences OK",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/update_proactive_event_status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $(\"Split Events\").item.json.id, p_status: \"processing\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Mark Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        -80
+      ],
+      "notes": "Lock event while processing"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.VIBEFIT_PROACTIVE_AGENT_URL || $env.VIBEFIT_AGENT_URL.replace(\"vibefit-agent\",\"vibefit-proactive-agent\")}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-vibefit-proactive-secret",
+              "value": "={{$env.VIBEFIT_PROACTIVE_AGENT_SECRET || $env.VIBEFIT_AGENT_SECRET}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event_type: $(\"Split Events\").item.json.event_type, user_id: $(\"Split Events\").item.json.user_id, source_record_id: $(\"Split Events\").item.json.source_record_id, event_id: $(\"Split Events\").item.json.id, channel: \"email\", metadata: $(\"Split Events\").item.json.metadata || {} }) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "name": "Call Proactive Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        -80
+      ],
+      "notes": "Server-to-server only"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "should-send",
+              "leftValue": "={{$json.should_send}}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "IF Should Send",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const agent = $input.first().json;\nconst event = $('Split Events').first().json;\n\nif (agent.should_send !== true) {\n  return [{\n    json: {\n      ...event,\n      skip_send: true,\n      reason_not_sent: agent.reason_not_sent || 'should_send_false',\n    },\n  }];\n}\n\nconst lines = [\n  agent.greeting || 'أهلًا،',\n  '',\n  agent.body || '',\n];\n\nif (Array.isArray(agent.recommended_actions) && agent.recommended_actions.length > 0) {\n  lines.push('', 'خطوات مقترحة:');\n  agent.recommended_actions.slice(0, 4).forEach((step, index) => {\n    lines.push((index + 1) + '. ' + step);\n  });\n}\n\nlines.push('', (agent.cta_text || 'افتحي VibeFit') + ': ' + (agent.cta_url || ''));\nif (agent.footer_notice) lines.push('', agent.footer_notice);\nlines.push('', 'فريق VibeFit');\n\nreturn [{\n  json: {\n    ...event,\n    skip_send: false,\n    email_subject: agent.subject,\n    email_body: lines.join('\\n'),\n    used_rag: Boolean(agent.used_rag),\n    used_personal_data: Boolean(agent.used_personal_data),\n  },\n}];"
+      },
+      "name": "Format Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -160
+      ],
+      "notes": "Plain text email body"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/get_user_email_for_proactive",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_user_id: $(\"Split Events\").item.json.user_id }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Fetch User Email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        -160
+      ],
+      "notes": "Resolve recipient from auth.users"
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{$json}}",
+        "subject": "={{$(\"Format Email\").item.json.email_subject}}",
+        "emailType": "text",
+        "message": "={{$(\"Format Email\").item.json.email_body}}",
+        "options": {}
+      },
+      "name": "Gmail Send",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2640,
+        -160
+      ],
+      "notes": "Sends personalized proactive email"
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $('Split Events').first().json;\nconst gmail = $input.first().json;\nconst messageId = gmail.id || gmail.messageId || null;\nreturn [{\n  json: {\n    event_id: event.id,\n    status: 'sent',\n    email_message_id: messageId,\n  },\n}];"
+      },
+      "name": "Prepare Sent Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/update_proactive_event_status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $json.event_id, p_status: \"sent\", p_email_message_id: $json.email_message_id }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Mark Sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3080,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $('Split Events').first().json;\nconst agent = $('Call Proactive Agent').first().json;\nreturn [{\n  json: {\n    event_id: event.id,\n    status: 'skipped',\n    error_code: agent.reason_not_sent || 'should_send_false',\n  },\n}];"
+      },
+      "name": "Prepare Skipped Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/update_proactive_event_status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $json.event_id, p_status: \"skipped\", p_error_code: $json.error_code }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Mark Skipped",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/update_proactive_event_status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $(\"Split Events\").item.json.id, p_status: \"skipped\", p_error_code: $json.pref_reason || \"preference_blocked\" }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Mark Pref Skipped",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $('Split Events').first().json;\nconst err = $input.first().json;\nreturn [{\n  json: {\n    event_id: event.id,\n    status: 'failed',\n    error_code: err.error || err.message || 'AGENT_FAILED',\n  },\n}];"
+      },
+      "name": "Prepare Failed Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.SUPABASE_URL}}/rest/v1/rpc/update_proactive_event_status",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "apikey",
+              "value": "={{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.SUPABASE_SERVICE_ROLE_KEY}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ p_event_id: $json.event_id, p_status: \"failed\", p_error_code: $json.error_code }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "name": "Mark Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        120
+      ]
+    },
+    {
+      "parameters": {},
+      "name": "Continue Batch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        3300,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Hourly Schedule": {
+      "main": [
+        [
+          {
+            "node": "Run Detection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Detection": {
+      "main": [
+        [
+          {
+            "node": "Fetch Pending Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Pending Events": {
+      "main": [
+        [
+          {
+            "node": "Split Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Events": {
+      "main": [
+        [
+          {
+            "node": "Fetch Preferences",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Continue Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Preferences": {
+      "main": [
+        [
+          {
+            "node": "Check Preferences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Preferences": {
+      "main": [
+        [
+          {
+            "node": "IF Preferences OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Preferences OK": {
+      "main": [
+        [
+          {
+            "node": "Mark Processing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Pref Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Processing": {
+      "main": [
+        [
+          {
+            "node": "Call Proactive Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Proactive Agent": {
+      "main": [
+        [
+          {
+            "node": "IF Should Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Should Send": {
+      "main": [
+        [
+          {
+            "node": "Format Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Skipped Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Email": {
+      "main": [
+        [
+          {
+            "node": "Fetch User Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch User Email": {
+      "main": [
+        [
+          {
+            "node": "Gmail Send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Send": {
+      "main": [
+        [
+          {
+            "node": "Prepare Sent Update",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Sent Update": {
+      "main": [
+        [
+          {
+            "node": "Mark Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Sent": {
+      "main": [
+        [
+          {
+            "node": "Continue Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Skipped Update": {
+      "main": [
+        [
+          {
+            "node": "Mark Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Skipped": {
+      "main": [
+        [
+          {
+            "node": "Continue Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Pref Skipped": {
+      "main": [
+        [
+          {
+            "node": "Continue Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Failed Update": {
+      "main": [
+        [
+          {
+            "node": "Mark Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Failed": {
+      "main": [
+        [
+          {
+            "node": "Continue Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Continue Batch": {
+      "main": [
+        [
+          {
+            "node": "Split Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "vibefit"
+    },
+    {
+      "name": "proactive-email"
+    }
+  ],
+  "triggerCount": 1,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

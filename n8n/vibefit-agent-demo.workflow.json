@@ -1,0 +1,93 @@
+{
+  "name": "VibeFit Agent Demo (Manual)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Demo: run manually in class presentation"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "s1",
+              "name": "sender_email",
+              "value": "demo.user@example.com",
+              "type": "string"
+            },
+            {
+              "id": "s2",
+              "name": "normalized_message",
+              "value": "التزامي انخفض هذا الأسبوع والطاقة منخفضة، ماذا تقترح؟",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "sample-data",
+      "name": "Set Sample Question",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [480, 300],
+      "notes": "Placeholder sender — no real user data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.VIBEFIT_AGENT_URL}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "x-vibefit-agent-secret", "value": "={{$env.VIBEFIT_AGENT_SECRET}}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"message\": {{ JSON.stringify($json.normalized_message) }},\n  \"channel\": \"email\",\n  \"external_sender\": {{ JSON.stringify($json.sender_email) }}\n}"
+      },
+      "id": "agent-call",
+      "name": "HTTP VibeFit Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300],
+      "notes": "Calls vibefit-agent webhook with AGENT_WEBHOOK_SECRET"
+    },
+    {
+      "parameters": {
+        "jsCode": "const res = $input.first().json;\nif (!res.success || !res.response?.answer) {\n  return [{ json: { preview: 'Agent failed — check URL and secret', raw: res } }];\n}\nconst r = res.response;\nconst sources = (r.sources || []).map(s => `- ${s.title} (${s.category})`).join('\\n');\nconst preview = [\n  '=== Email Reply Preview ===',\n  r.answer,\n  '',\n  'الخطوة المقترحة:',\n  r.recommended_action,\n  sources ? '\\nالمصادر:\\n' + sources : '',\n  r.safety_notice ? '\\nتنبيه: ' + r.safety_notice : ''\n].filter(Boolean).join('\\n');\nreturn [{ json: { preview, intent: r.intent, used_rag: r.used_rag, used_personal_data: r.used_personal_data } }];"
+      },
+      "id": "format-preview",
+      "name": "Format Email Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "notes": "Preview reply without sending Gmail"
+    },
+    {
+      "parameters": {},
+      "id": "output",
+      "name": "Output Preview",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1200, 300],
+      "notes": "View preview field in n8n output panel"
+    }
+  ],
+  "connections": {
+    "Manual Trigger": { "main": [[{ "node": "Set Sample Question", "type": "main", "index": 0 }]] },
+    "Set Sample Question": { "main": [[{ "node": "HTTP VibeFit Agent", "type": "main", "index": 0 }]] },
+    "HTTP VibeFit Agent": { "main": [[{ "node": "Format Email Reply", "type": "main", "index": 0 }]] },
+    "Format Email Reply": { "main": [[{ "node": "Output Preview", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": [{ "name": "VibeFit" }, { "name": "Demo" }]
+}

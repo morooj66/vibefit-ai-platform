@@ -1,0 +1,41 @@
+{
+  "name": "vibefit",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "tsc -b --noEmit",
+    "preview": "vite preview",
+    "validate:agent": "node scripts/validate-agent-setup.mjs",
+    "test:agent": "node scripts/test-agent-scenarios.mjs",
+    "sync:n8n": "node scripts/sync-n8n-email-workflows.mjs",
+    "validate:n8n": "node scripts/validate-n8n-email-agent.mjs",
+    "test:n8n-email": "node scripts/test-n8n-email-agent.mjs",
+    "generate:agent-sql": "node scripts/generate-agent-email-setup-sql.mjs",
+    "test:live-agent-email": "node scripts/test-live-agent-email.mjs",
+    "sync:n8n-proactive": "node scripts/sync-n8n-proactive-workflows.mjs",
+    "validate:proactive": "node scripts/validate-proactive-agent.mjs",
+    "test:proactive": "node scripts/test-proactive-agent-scenarios.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-hook-form": "^7.79.0",
+    "react-router-dom": "^7.9.4",
+    "recharts": "^3.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.13",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "supabase": "^2.107.0",
+    "tailwindcss": "^4.1.13",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.7"
+  }
+}

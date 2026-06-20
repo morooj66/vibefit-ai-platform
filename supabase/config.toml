@@ -1,0 +1,8 @@
+# VibeFit — Supabase local config (Edge Functions)
+# راجع: https://supabase.com/docs/guides/functions/function-configuration
+
+[functions.generate-recommendation]
+verify_jwt = true
+
+[functions.vibefit-agent]
+verify_jwt = false
