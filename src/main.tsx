@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { isSupabaseConfigured } from './lib/supabaseConfig';
+import { isSupabaseConfigured, logConfigCheck } from './lib/supabaseConfig';
 import { ConfigSetupPage } from './pages/ConfigSetupPage';
 import './index.css';
 
@@ -56,6 +56,8 @@ async function bootstrap() {
   }
 
   const root = createRoot(rootElement);
+
+  logConfigCheck();
 
   if (!isSupabaseConfigured()) {
     renderConfigSetup(root);

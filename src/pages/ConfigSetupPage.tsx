@@ -10,7 +10,8 @@ export function ConfigSetupPage() {
         <p className="mt-3 text-sm leading-relaxed text-neutral-600">
           أضف متغيرات Supabase العامة (<code className="text-xs">VITE_SUPABASE_URL</code> و{' '}
           <code className="text-xs">VITE_SUPABASE_ANON_KEY</code>) في ملف{' '}
-          <code className="text-xs">.env</code> محليًا أو في إعدادات Hugging Face Space.
+          <code className="text-xs">.env</code> محليًا، أو في Vercel → Settings → Environment Variables
+          (Production)، أو في Hugging Face Space Variables.
         </p>
         <p className="mt-3 text-xs text-neutral-500">
           لا تضع مفاتيح الخادم (Service Role أو OpenAI) في الواجهة الأمامية.
